@@ -40,10 +40,7 @@ jobs:
     - name: Patch mikrotik
       run: |
 
-          sudo -E python3 patch.py npk routeros-7.17-arm64.npk
           sudo -E python3 patch.py npk AX3600_wifi-qcom-7.17-arm64.npk
-          sudo cp routeros-7.17-arm64.npk routeros-7.17-arm64-patch.npk
-          sudo cp AX3600_wifi-qcom-7.17-arm64.npk AX3600_wifi-qcom-7.17-arm64-patch.npk
         
 
 
@@ -55,5 +52,4 @@ jobs:
         tag_name: 7.17
         make_latest: true
         files: |
-          routeros-7.17-arm64-patch.npk
-          AX3600_wifi-qcom-7.17-arm64-patch.npk
+          AX3600_wifi-qcom-7.17-arm64.npk
