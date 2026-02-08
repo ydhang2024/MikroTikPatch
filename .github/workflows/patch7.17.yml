@@ -47,14 +47,13 @@ jobs:
         
 
 
-    - name: Create Release tag 
-      uses: softprops/action-gh-release@master
+
+    
+    - name: Upload Files as Artifact (No Release)
+      uses: actions/upload-artifact@v4
       with:
-        name: "RouterOS"
-        body_path: "CHANGELOG"
-        tag_name: 7.17
-        make_latest: true
-        files: |
+        name: mikrotik-7.17
+        path: |
           AX3600_wifi-qcom-7.17-arm64.npk
           zerotier-7.17-arm64.npk
           container-7.17-arm64.npk
