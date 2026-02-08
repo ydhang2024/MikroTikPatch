@@ -40,7 +40,7 @@ jobs:
     - name: Patch mikrotik
       run: |
 
-          sudo -E python3 patch.py npk AX3600_wifi-qcom-7.17-arm64.npk
+          sudo -E python3 patch.py npk wifi-qcom-7.17-arm64.npk
         
 
 
@@ -52,4 +52,4 @@ jobs:
         tag_name: 7.17
         make_latest: true
         files: |
-          AX3600_wifi-qcom-7.17-arm64.npk
+          wifi-qcom-7.17-arm64.npk
