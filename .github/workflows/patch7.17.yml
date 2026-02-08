@@ -41,6 +41,7 @@ jobs:
       run: |
 
           sudo -E python3 patch.py npk routeros-7.17-arm64.npk
+          sudo -E python3 patch.py npk AX3600_wifi-qcom-7.17-arm64.npk
 
 
     - name: Create Release tag 
