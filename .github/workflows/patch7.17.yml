@@ -1,4 +1,4 @@
-name: Patch v7
+name: Patch v7.17
 
 on:
   workflow_dispatch:
@@ -41,6 +41,9 @@ jobs:
       run: |
 
           sudo -E python3 patch.py npk AX3600_wifi-qcom-7.17-arm64.npk
+          sudo -E python3 patch.py npk zerotier-7.17-arm64.npk
+          sudo -E python3 patch.py npk container-7.17-arm64.npk
+          sudo -E python3 patch.py npk user-manager-7.17-arm64.npk
         
 
 
@@ -53,3 +56,6 @@ jobs:
         make_latest: true
         files: |
           AX3600_wifi-qcom-7.17-arm64.npk
+          zerotier-7.17-arm64.npk
+          container-7.17-arm64.npk
+          user-manager-7.17-arm64.npk
