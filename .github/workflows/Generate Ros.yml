@@ -29,8 +29,3 @@ jobs:
           python3 license.py licgenros ${{ inputs.software_id }} 9DBC845E9018537810FDAE62824322EEE1B12BAD81FCA28EC295FB397C61CE0B > ${{ inputs.software_id }}.txt
           cat ${{ inputs.software_id }}.txt  # Display the license in logs for debugging
 
-      - name: Upload License Key as Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "license-release-${{ github.run_id }}" ${{ inputs.software_id }}.txt --title "License for ${{ inputs.software_id }}" --notes "Generated license for ${{ inputs.software_id }}"
