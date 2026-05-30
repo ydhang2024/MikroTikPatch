@@ -1,0 +1,276 @@
+name: MikroTik RouterOS V7 Release & Publisher
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'RouterOS 版本 (例如: 7.21.3)'
+        required: true
+        type: string
+      publish_to_vps:
+        description: '是否同步发布到 VPS 升级服务器'
+        required: true
+        type: boolean
+        default: false
+      is_latest:
+        description: '是否更新 NEWEST 文件 (设为最新版本)'
+        required: true
+        type: boolean
+        default: true
+      channel:
+        description: '更新频道'
+        required: true
+        type: choice
+        options:
+          - stable
+          - long-term
+          - testing
+          - development
+        default: 'stable'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-pack:
+    runs-on: ubuntu-latest
+    
+    env:
+      VERSION: ${{ inputs.version }}
+      ARCH: 'arm64'
+      MIKRO_NPK_SIGN_PUBLIC_KEY: ${{ secrets.MIKRO_NPK_SIGN_PUBLIC_KEY }}
+      MIKRO_LICENSE_PUBLIC_KEY: ${{ secrets.MIKRO_LICENSE_PUBLIC_KEY }}
+      CUSTOM_LICENSE_PRIVATE_KEY: ${{ secrets.CUSTOM_LICENSE_PRIVATE_KEY }}
+      CUSTOM_LICENSE_PUBLIC_KEY: ${{ secrets.CUSTOM_LICENSE_PUBLIC_KEY }}
+      CUSTOM_NPK_SIGN_PRIVATE_KEY: ${{ secrets.CUSTOM_NPK_SIGN_PRIVATE_KEY }}
+      CUSTOM_NPK_SIGN_PUBLIC_KEY: ${{ secrets.CUSTOM_NPK_SIGN_PUBLIC_KEY }}
+      MIKRO_UPGRADE_URL: ${{ secrets.MIKRO_UPGRADE_URL }}
+      CUSTOM_UPGRADE_URL: ${{ secrets.CUSTOM_UPGRADE_URL }}
+      MIKRO_CLOUD_URL: ${{ secrets.MIKRO_CLOUD_URL }}
+      CUSTOM_CLOUD_URL: ${{ secrets.CUSTOM_CLOUD_URL }}
+      MIKRO_CLOUD_PUBLIC_KEY: ${{ secrets.MIKRO_CLOUD_PUBLIC_KEY }}
+      CUSTOM_CLOUD_PUBLIC_KEY: ${{ secrets.CUSTOM_CLOUD_PUBLIC_KEY }}          
+      MIKRO_LICENCE_URL: ${{ secrets.MIKRO_LICENCE_URL }}
+      CUSTOM_LICENCE_URL: ${{ secrets.CUSTOM_LICENCE_URL }}
+      MIKRO_RENEW_URL: ${{ secrets.MIKRO_RENEW_URL }}
+      CUSTOM_RENEW_URL: ${{ secrets.CUSTOM_RENEW_URL }}
+
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: 安装基础依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip unzip wget curl squashfs-tools python3-pip rsync
+          sudo pip3 install pefile pyelftools
+
+      - name: 下载、Patch主包
+        run: |
+          echo "1. 下载 RouterOS NPK..."
+          curl -L -# -O "https://${{ secrets.MIKRO_DOWNLOAD_URL }}/routeros/${VERSION}/routeros-${VERSION}-${ARCH}.npk"
+
+          echo "2. 执行 Patch (routeros)..."
+          sudo -E python3 patch.py npk routeros-${VERSION}-${ARCH}.npk
+          sudo mv routeros-${VERSION}-${ARCH}.npk routeros-${VERSION}-${ARCH}-patch.npk
+
+      - name: 使用新公钥签名NPK 和打包option
+        run: |
+          echo "3. 下载All Packages..."
+          curl -L -# -O "https://${{ secrets.MIKRO_DOWNLOAD_URL }}/routeros/$VERSION/all_packages-$ARCH-$VERSION.zip"
+
+          echo "4. 创建目录并解压"
+          sudo mkdir -p ./all_packages-${ARCH}
+          sudo unzip -q all_packages-${ARCH}-${VERSION}.zip -d ./all_packages-${ARCH}/
+          
+          MAIN_NPK_IN_ZIP="./all_packages-${ARCH}/routeros-${VERSION}-${ARCH}.npk"
+          if [ -f "$MAIN_NPK_IN_ZIP" ]; then
+              sudo rm -f "$MAIN_NPK_IN_ZIP"
+          fi
+
+          echo "5. 签名当前所有 NPK 文件..."          
+          NPK_FILES=$(find ./all_packages-${ARCH} -name "*.npk")
+          for file in $NPK_FILES; do
+              sudo -E python3 npk.py sign "$file" "$file"
+          done
+
+          echo "6. 处理 wifi-qcom 驱动替换..."
+          WIFI_FILE="./all_packages-${ARCH}/wifi-qcom-${VERSION}-${ARCH}.npk"
+          WIFIBE_FILE="./all_packages-${ARCH}/wifi-qcom-be-${VERSION}-${ARCH}.npk"
+          WIRE_FILE="./all_packages-${ARCH}/wireless-${VERSION}-${ARCH}.npk"
+          WIFI_FILE_X="./all_packages-${ARCH}/wifi-qcom-${VERSION}-${ARCH}-X.npk"
+          WIFI_FILE_R="./all_packages-${ARCH}/wifi-qcom-${VERSION}-${ARCH}-R.npk"
+          if [ -f "$WIFI_FILE" ]; then
+              sudo -E python3 roswifi.py -i "$WIFI_FILE" -b ./bdwlanX ./bdwlanR -o "$WIFI_FILE_X" "$WIFI_FILE_R"
+              sudo rm -f "$WIFI_FILE"
+              sudo rm -f "$WIRE_FILE"
+              sudo rm -f "$WIFIBE_FILE"
+          fi
+
+          echo "7. 打包option 与 mihomo (arm64)..."
+          sudo mkdir -p ./option-root/bin/
+          sudo mkdir -p ./mihomo-root/bin/
+          
+          echo ">>> 正在编译定制版 mihomo..."
+          git clone --depth 1 -b Alpha https://x-access-token:${{ secrets.MY_GH_TOKEN }}@github.com/ydhang2024/mihomo-alpha.git mihomo_src
+          
+          if [ ! -d "mihomo_src" ]; then
+              echo "!!! 克隆仓库失败，请检查网络连接或仓库地址"
+              exit 1
+          fi
+          cd mihomo_src
+          GOOS=linux GOARCH=arm64 go build -ldflags "-s -w" -o ../mihomo_temp main.go
+          cd ..
+          rm -rf mihomo_src          
+          if [ ! -f "mihomo_temp" ]; then
+              echo "!!! Go 编译失败，请检查上方编译日志"
+              exit 1
+          fi          
+          sudo mv mihomo_temp ./mihomo-root/bin/mihomo
+          sudo chmod +x ./mihomo-root/bin/mihomo          
+          echo ">>> Mihomo 编译成功！"
+          
+          echo ">>> 正在制作option NPK..."
+          if [ -f "./busybox/busybox_aarch64" ]; then
+              sudo cp ./busybox/busybox_aarch64 ./option-root/bin/busybox
+              sudo chmod +x ./option-root/bin/busybox
+              sudo chmod +x ./busybox/busybox_x86
+              COMMANDS=$(./busybox/busybox_x86 --list)
+              for cmd in $COMMANDS; do
+                  sudo ln -sf /pckg/option/bin/busybox ./option-root/bin/$cmd                  
+              done             
+          fi
+          
+          TEMPLATE_NPK=$(find ./all_packages-${ARCH} -name "gps-*.npk" | head -n 1)
+          if [ -z "$TEMPLATE_NPK" ]; then 
+              TEMPLATE_NPK="routeros-${VERSION}-${ARCH}-patch.npk"
+          fi
+          
+          echo ">>> 生成 squashfs 镜像..."
+          sudo mksquashfs option-root option.sfs -quiet -comp xz -no-xattrs -b 256k -all-root
+          sudo mksquashfs mihomo-root mihomo.sfs -quiet -comp xz -no-xattrs -b 256k -all-root
+
+          echo ">>> 打包 option NPK..."
+          sudo -E python3 npk.py create "$TEMPLATE_NPK" "./all_packages-${ARCH}/option-${VERSION}-${ARCH}.npk" option ./option.sfs -desc="Busybox for arm64"
+
+          echo ">>> 打包 [mihomo NPK] ..."
+          sudo -E python3 npk.py create "$TEMPLATE_NPK" "./all_packages-${ARCH}/mihomo-${VERSION}-${ARCH}.npk" mihomo ./mihomo.sfs -desc="Mihomo proxy core"
+
+          echo "8. 重新生成全量压缩包..."
+          cd ./all_packages-${ARCH}
+          sudo zip ../all_packages-${ARCH}-${VERSION}-patched.zip *.npk >/dev/null
+          cd ..
+          
+          echo "9. 获取 CHANGELOG..."
+          curl -sL "https://${{ secrets.MIKRO_DOWNLOAD_URL }}/routeros/${VERSION}/CHANGELOG" > changelog.txt
+
+      - name: 生成配置文件并发布到 VPS
+        if: ${{ inputs.publish_to_vps == true }}
+        env:
+          SSH_HOST: ${{ secrets.VPS_SSH_HOST }}
+          SSH_PORT: ${{ secrets.VPS_SSH_PORT || '22' }}
+          SSH_USER: ${{ secrets.VPS_SSH_USER }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          WEB_DIR: ${{ secrets.VPS_WEB_DIR }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          echo ">>> 准备 VPS 部署环境..."
+          mkdir -p ./vps_upload/${VERSION}
+          
+          # 1. 拷贝所有的额外包 (从 all_packages 目录)
+          cp ./all_packages-${ARCH}/*.npk ./vps_upload/${VERSION}/
+          cp changelog.txt ./vps_upload/${VERSION}/CHANGELOG
+          
+          # 2. 拷贝主系统包，并将其重命名为官方标准名称 (去除 -patch)
+          cp routeros-${VERSION}-${ARCH}-patch.npk ./vps_upload/${VERSION}/routeros-${VERSION}-${ARCH}.npk
+          
+          # 3. 规范化 wifi-qcom 文件名 (在 vps_upload 目录中操作，不影响 Release)
+          cd ./vps_upload/${VERSION}
+          
+          # 删除不需要的 -R 版本
+          rm -f wifi-qcom-${VERSION}-${ARCH}-R.npk
+          
+          # 将 -X 版本的名字恢复成官方标准的驱动包名
+          if [ -f "wifi-qcom-${VERSION}-${ARCH}-X.npk" ]; then
+              mv wifi-qcom-${VERSION}-${ARCH}-X.npk wifi-qcom-${VERSION}-${ARCH}.npk
+              echo ">>> 已将 wifi-qcom X 版本格式化为官方标准名称。"
+          fi
+          
+          # 4. 生成 packages.csv (现在所有包名都是标准的官方格式了)
+          echo ">>> 正在生成 packages.csv..."
+          echo "arch,name,size" > packages.csv
+          for file in *.npk; do
+              base=$(basename "$file" .npk)
+              [[ "$base" == routeros-* ]] && continue
+              name="${base%%-${VERSION}-*}"
+              arch="${base##*-${VERSION}-}"
+              if [[ "$name" != "$base" && "$arch" != "$base" ]]; then
+                  size=$(stat -c%s "$file")
+                  echo "$arch,$name,$size" >> packages.csv
+              fi
+          done
+          cd ../../
+          
+          # 5. 检查是否需要更新 NEWEST 文件
+          if [ "${{ inputs.is_latest }}" == "true" ]; then
+              echo ">>> 正在生成最新版本声明文件 (NEWESTa7.${CHANNEL})..."
+              BUILD_TIME=$(date +%s)
+              echo "${VERSION} ${BUILD_TIME}" > ./vps_upload/NEWESTa7.${CHANNEL}
+          fi
+          
+          # 6. 配置 SSH 私钥
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -p $SSH_PORT $SSH_HOST >> ~/.ssh/known_hosts
+          
+          echo ">>> 正在通过 Rsync 将固件推送到 VPS..."
+          # 同步版本文件夹 (包含重命名后的 NPK、csv 和 CHANGELOG)
+          rsync -avz --progress -e "ssh -p $SSH_PORT" ./vps_upload/${VERSION} $SSH_USER@$SSH_HOST:$WEB_DIR/
+          
+          # 如果生成了 NEWEST 文件，同步到网站根目录
+          if [ -f "./vps_upload/NEWESTa7.${CHANNEL}" ]; then
+              rsync -avz --progress -e "ssh -p $SSH_PORT" ./vps_upload/NEWESTa7.${CHANNEL} $SSH_USER@$SSH_HOST:$WEB_DIR/
+              echo ">>> NEWESTa7.${CHANNEL} 已同步，当前设为了最新版本！"
+          else
+              echo ">>> 未勾选设为最新版，跳过更新 NEWESTa7 文件。"
+          fi
+          echo ">>> VPS 部署任务完成！"
+
+      - name: 清理临时文件 (准备 Netinstall)
+        run: |
+          sudo rm -rf ./all_packages-${ARCH}
+          sudo rm all_packages-${ARCH}-${VERSION}.zip
+
+      - name: 下载并 Patch Netinstall 工具
+        run: |
+          echo "10. 下载官方 Netinstall 工具..."
+          sudo wget -nv -O netinstall.zip "https://${{ secrets.MIKRO_DOWNLOAD_URL }}/routeros/${VERSION}/netinstall-${VERSION}.zip"
+
+          echo "11. Patch Windows 版本 (netinstall.exe)..."
+          sudo unzip -q netinstall.zip
+          if [ ! -f "./netinstall.exe" ]; then
+              echo "错误: 未找到 netinstall.exe，解压可能失败！"
+              exit 1
+          fi
+          sudo -E python3 patch.py netinstall netinstall.exe
+          sudo zip -q netinstall-${VERSION}.zip ./netinstall.exe
+          sudo rm -f ./netinstall.exe ./netinstall.zip 
+
+      - name: 自动发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-${{ env.ARCH }}
+          name: RouterOS v${{ env.VERSION }} Patched (${{ env.ARCH }})
+          body_path: changelog.txt 
+          files: |
+            routeros-${{ env.VERSION }}-${{ env.ARCH }}-patch.npk
+            all_packages-${{ env.ARCH }}-${{ env.VERSION }}-patched.zip
+            netinstall-${{ env.VERSION }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
